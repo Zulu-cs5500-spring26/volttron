@@ -178,6 +178,25 @@ class Interface(BasicRevert, BaseInterface):
                 error_msg = f"Currently set_point is supported only for thermostats state and temperature {register.entity_id}"
                 _log.error(error_msg)
                 raise ValueError(error_msg)
+
+        # NEW: Changing cover values.
+        elif "cover." in register.entity_id:
+            if entity_point == "state":
+                # Handle state changes (open/close/stop)
+                self.set_cover_state(register.entity_id, register.value)
+            elif entity_point == "position":
+                # Handle position changes (0-100)
+                if isinstance(register.value, int) and 0 <= register.value <= 100:
+                    self.set_cover_position(register.entity_id, register.value)
+                else:
+                    error_msg = f"Position value for {register.entity_id} should be an integer between 0 and 100"
+                    _log.error(error_msg)
+                    raise ValueError(error_msg)
+            else:
+                error_msg = f"Unexpected entity_point '{entity_point}' for cover {register.entity_id}. " \
+                           f"Supported points: 'state' or 'position'"
+                _log.error(error_msg)
+                raise ValueError(error_msg)
         else:
             error_msg = f"Unsupported entity_id: {register.entity_id}. " \
                         f"Currently set_point is supported only for thermostats and lights"
@@ -251,6 +270,30 @@ class Interface(BasicRevert, BaseInterface):
                         attribute = entity_data.get("attributes", {}).get(f"{entity_point}", 0)
                         register.value = attribute
                         result[register.point_name] = attribute
+
+                # Handling covers, which have unique states and attributes.
+                elif "cover." in entity_id:
+                    if entity_point == "state":
+                        state = entity_data.get("state", None)
+                        # Covers return states like "open", "closed", "opening", "closing"
+                        register.value = state
+                        result[register.point_name] = state
+                    elif entity_point == "position":
+                        # Position is in attributes for covers
+                        position = entity_data.get("attributes", {}).get("current_position", None)
+                        if position is not None:
+                            register.value = position
+                            result[register.point_name] = position
+                        else:
+                            _log.warning(f"Position not available for {entity_id}")
+                            register.value = None
+                            result[register.point_name] = None
+                    else:
+                        # Other attributes
+                        attribute = entity_data.get("attributes", {}).get(f"{entity_point}", 0)
+                        register.value = attribute
+                        result[register.point_name] = attribute
+
                 else:  # handling all devices that are not thermostats or light states
                     if entity_point == "state":
 
@@ -405,3 +448,83 @@ class Interface(BasicRevert, BaseInterface):
             print(f"Successfully set {entity_id} to {state}")
         else:
             print(f"Failed to set {entity_id} to {state}: {response.text}")
+    
+    def set_cover_state(self, entity_id, value):
+        """
+        Control cover state (open/close/stop).
+        
+        Args:
+            entity_id: Cover entity ID (e.g., "cover.living_room_blinds")
+            value: State value - can be string ("open", "close", "stop") or int (for compatibility)
+        
+        Raises:
+            ValueError: If value is not a valid state
+        """
+        # Convert value to string and normalize
+        state = str(value).lower().strip()
+        
+        # Validate state
+        valid_states = ["open", "close", "stop"]
+        if state not in valid_states:
+            error_msg = f"Invalid cover state '{value}' for {entity_id}. " \
+                       f"Must be one of: {', '.join(valid_states)}"
+            _log.error(error_msg)
+            raise ValueError(error_msg)
+        
+        # Map state to service name
+        service = f"{state}_cover"
+        
+        # Build URL and headers
+        url = f"http://{self.ip_address}:{self.port}/api/services/cover/{service}"
+        headers = {
+            "Authorization": f"Bearer {self.access_token}",
+            "Content-Type": "application/json",
+        }
+        
+        # Build payload
+        payload = {
+            "entity_id": entity_id
+        }
+        
+        # Make API call using existing helper
+        _post_method(url, headers, payload, f"set {entity_id} to {state}")
+
+    def set_cover_position(self, entity_id, position):
+        """
+        Set cover position (0-100).
+        
+        Args:
+            entity_id: Cover entity ID (e.g., "cover.living_room_blinds")
+            position: Integer position value (0=closed, 100=open)
+        
+        Raises:
+            ValueError: If position is not an integer or out of range
+        """
+        # Position validation already done in _set_point(), but double-check
+        try:
+            position_int = int(position)
+        except (ValueError, TypeError):
+            error_msg = f"Position value for {entity_id} must be a number, got: {position}"
+            _log.error(error_msg)
+            raise ValueError(error_msg)
+        
+        if not 0 <= position_int <= 100:
+            error_msg = f"Position value for {entity_id} must be between 0 and 100, got: {position_int}"
+            _log.error(error_msg)
+            raise ValueError(error_msg)
+        
+        # Build URL and headers
+        url = f"http://{self.ip_address}:{self.port}/api/services/cover/set_cover_position"
+        headers = {
+            "Authorization": f"Bearer {self.access_token}",
+            "Content-Type": "application/json",
+        }
+        
+        # Build payload
+        payload = {
+            "entity_id": entity_id,
+            "position": position_int
+        }
+        
+        # Make API call using existing helper
+        _post_method(url, headers, payload, f"set position of {entity_id} to {position_int}")
