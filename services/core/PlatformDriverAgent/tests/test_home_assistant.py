@@ -39,8 +39,58 @@ from volttrontesting.utils.platformwrapper import PlatformWrapper
 utils.setup_logging()
 logger = logging.getLogger(__name__)
 
-# To run these tests, create a helper toggle named volttrontest in your Home Assistant instance.
-# This can be done by going to Settings > Devices & services > Helpers > Create Helper > Toggle
+# To run these tests, set up a Home Assistant instance with the following test entities:
+#
+# 1. Create a helper toggle named `volttrontest`:
+#    Settings > Devices & services > Helpers > Create Helper > Toggle > name "volttrontest"
+#
+# 2. Add the following to your HA configuration.yaml to create template switch/fan/cover
+#    entities backed by helpers (so the tests can exercise the switch/fan/cover dispatch
+#    paths without requiring real hardware):
+#
+#    input_boolean:
+#      vt_switch_backing:
+#      vt_fan_backing:
+#      vt_cover_backing:
+#
+#    switch:
+#      - platform: template
+#        switches:
+#          volttrontest:
+#            value_template: "{{ is_state('input_boolean.vt_switch_backing', 'on') }}"
+#            turn_on:
+#              service: input_boolean.turn_on
+#              target: {entity_id: input_boolean.vt_switch_backing}
+#            turn_off:
+#              service: input_boolean.turn_off
+#              target: {entity_id: input_boolean.vt_switch_backing}
+#
+#    fan:
+#      - platform: template
+#        fans:
+#          volttrontest:
+#            value_template: "{{ is_state('input_boolean.vt_fan_backing', 'on') }}"
+#            turn_on:
+#              service: input_boolean.turn_on
+#              target: {entity_id: input_boolean.vt_fan_backing}
+#            turn_off:
+#              service: input_boolean.turn_off
+#              target: {entity_id: input_boolean.vt_fan_backing}
+#
+#    cover:
+#      - platform: template
+#        covers:
+#          volttrontest:
+#            value_template: "{{ is_state('input_boolean.vt_cover_backing', 'on') }}"
+#            open_cover:
+#              service: input_boolean.turn_on
+#              target: {entity_id: input_boolean.vt_cover_backing}
+#            close_cover:
+#              service: input_boolean.turn_off
+#              target: {entity_id: input_boolean.vt_cover_backing}
+#
+# 3. Restart Home Assistant, then fill in the three variables below and run:
+#    pytest services/core/PlatformDriverAgent/tests/test_home_assistant.py -v
 HOMEASSISTANT_TEST_IP = ""
 ACCESS_TOKEN = ""
 PORT = ""
@@ -75,12 +125,75 @@ def test_data_poll(volttron_instance: PlatformWrapper, config_store):
 # Turn on the light. Light is automatically turned off every 30 seconds to allow test to turn
 # it on and receive the correct value.
 def test_set_point(volttron_instance, config_store):
-    expected_values = {'bool_state': 1}
+    expected_values = {'bool_state': 1,
+                       'switch_state': 0, 'fan_state': 0, 'cover_state': 0}
     agent = volttron_instance.dynamic_agent
     agent.vip.rpc.call(PLATFORM_DRIVER, 'set_point', 'home_assistant', 'bool_state', 1)
     gevent.sleep(10)
     result = agent.vip.rpc.call(PLATFORM_DRIVER, 'scrape_all', 'home_assistant').get(timeout=20)
     assert result == expected_values, "The result does not match the expected result."
+
+
+# Set the switch on via Volttron, then read it back through scrape_all.
+# Exercises the new switch dispatch branch + the _scrape_all bug fix on the read path.
+def test_switch_set_and_read(volttron_instance, config_store):
+    agent = volttron_instance.dynamic_agent
+    agent.vip.rpc.call(PLATFORM_DRIVER, 'set_point',
+                       'home_assistant', 'switch_state', 1).get(timeout=20)
+    gevent.sleep(3)
+    result = agent.vip.rpc.call(PLATFORM_DRIVER, 'scrape_all',
+                                'home_assistant').get(timeout=20)
+    assert result['switch_state'] == 1, \
+        "switch.volttrontest should be on after set_point(switch_state, 1)"
+
+    # turn it off again to leave the instance clean for the next test
+    agent.vip.rpc.call(PLATFORM_DRIVER, 'set_point',
+                       'home_assistant', 'switch_state', 0).get(timeout=20)
+    gevent.sleep(2)
+    result = agent.vip.rpc.call(PLATFORM_DRIVER, 'scrape_all',
+                                'home_assistant').get(timeout=20)
+    assert result['switch_state'] == 0
+
+
+# Same loop for fan.volttrontest.
+def test_fan_set_and_read(volttron_instance, config_store):
+    agent = volttron_instance.dynamic_agent
+    agent.vip.rpc.call(PLATFORM_DRIVER, 'set_point',
+                       'home_assistant', 'fan_state', 1).get(timeout=20)
+    gevent.sleep(3)
+    result = agent.vip.rpc.call(PLATFORM_DRIVER, 'scrape_all',
+                                'home_assistant').get(timeout=20)
+    assert result['fan_state'] == 1, \
+        "fan.volttrontest should be on after set_point(fan_state, 1)"
+
+    agent.vip.rpc.call(PLATFORM_DRIVER, 'set_point',
+                       'home_assistant', 'fan_state', 0).get(timeout=20)
+    gevent.sleep(2)
+
+
+# Cover uses open/close semantics: set_point(100) -> open, set_point(0) -> closed.
+def test_cover_set_and_read(volttron_instance, config_store):
+    agent = volttron_instance.dynamic_agent
+    agent.vip.rpc.call(PLATFORM_DRIVER, 'set_point',
+                       'home_assistant', 'cover_state', 100).get(timeout=20)
+    gevent.sleep(3)
+    result = agent.vip.rpc.call(PLATFORM_DRIVER, 'scrape_all',
+                                'home_assistant').get(timeout=20)
+    assert result['cover_state'] in (1, 100), \
+        "cover.volttrontest should be open after set_point(cover_state, 100)"
+
+    agent.vip.rpc.call(PLATFORM_DRIVER, 'set_point',
+                       'home_assistant', 'cover_state', 0).get(timeout=20)
+    gevent.sleep(2)
+
+
+# Regression: invalid value must raise before the HTTP call is made.
+# This is the behaviour we added in the fix for #28.
+def test_invalid_switch_value_is_rejected(volttron_instance, config_store):
+    agent = volttron_instance.dynamic_agent
+    with pytest.raises(Exception):
+        agent.vip.rpc.call(PLATFORM_DRIVER, 'set_point',
+                           'home_assistant', 'switch_state', 5).get(timeout=20)
 
 
 @pytest.fixture(scope="module")
@@ -90,17 +203,52 @@ def config_store(volttron_instance, platform_driver):
     volttron_instance.add_capabilities(volttron_instance.dynamic_agent.core.publickey, capabilities)
 
     registry_config = "homeassistant_test.json"
-    registry_obj = [{
-        "Entity ID": "input_boolean.volttrontest",
-        "Entity Point": "state",
-        "Volttron Point Name": "bool_state",
-        "Units": "On / Off",
-        "Units Details": "off: 0, on: 1",
-        "Writable": True,
-        "Starting Value": 3,
-        "Type": "int",
-        "Notes": "lights hallway"
-    }]
+    registry_obj = [
+        {
+            "Entity ID": "input_boolean.volttrontest",
+            "Entity Point": "state",
+            "Volttron Point Name": "bool_state",
+            "Units": "On / Off",
+            "Units Details": "off: 0, on: 1",
+            "Writable": True,
+            "Starting Value": 3,
+            "Type": "int",
+            "Notes": "lights hallway"
+        },
+        {
+            "Entity ID": "switch.volttrontest",
+            "Entity Point": "state",
+            "Volttron Point Name": "switch_state",
+            "Units": "On / Off",
+            "Units Details": "off: 0, on: 1",
+            "Writable": True,
+            "Starting Value": 0,
+            "Type": "int",
+            "Notes": "test switch (template-backed)"
+        },
+        {
+            "Entity ID": "fan.volttrontest",
+            "Entity Point": "state",
+            "Volttron Point Name": "fan_state",
+            "Units": "On / Off",
+            "Units Details": "off: 0, on: 1",
+            "Writable": True,
+            "Starting Value": 0,
+            "Type": "int",
+            "Notes": "test fan (template-backed)"
+        },
+        {
+            "Entity ID": "cover.volttrontest",
+            "Entity Point": "state",
+            "Volttron Point Name": "cover_state",
+            "Units": "Open / Closed",
+            "Units Details": "closed: 0, open: 100",
+            "Writable": True,
+            "Starting Value": 0,
+            "Type": "int",
+            "Notes": "test cover (template-backed)"
+        },
+    ]
 
     volttron_instance.dynamic_agent.vip.rpc.call(CONFIGURATION_STORE,
                                                  "manage_store",
