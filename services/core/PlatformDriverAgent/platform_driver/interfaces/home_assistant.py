@@ -23,16 +23,11 @@
 # }}}
 
 
-import random
-from math import pi
-import json
-import sys
-from platform_driver.interfaces import BaseInterface, BaseRegister, BasicRevert
-from volttron.platform.agent import utils
-from volttron.platform.vip.agent import Agent
 import logging
+
 import requests
-from requests import get
+
+from platform_driver.interfaces import BaseInterface, BaseRegister, BasicRevert
 
 _log = logging.getLogger(__name__)
 type_mapping = {"string": str,
@@ -155,6 +150,28 @@ class Interface(BasicRevert, BaseInterface):
             else:
                 _log.info(f"Currently, input_booleans only support state")
 
+        elif "switch." in register.entity_id:
+            if entity_point == "state":
+                if isinstance(register.value, int) and register.value in [0, 1]:
+                    self.set_switch(register.entity_id, "on" if register.value == 1 else "off")
+                else:
+                    error_msg = f"State value for {register.entity_id} should be an integer 0 or 1"
+                    _log.error(error_msg)
+                    raise ValueError(error_msg)
+            else:
+                _log.info(f"Currently, switches only support state")
+
+        elif "fan." in register.entity_id:
+            if entity_point == "state":
+                if isinstance(register.value, int) and register.value in [0, 1]:
+                    self.set_fan(register.entity_id, "on" if register.value == 1 else "off")
+                else:
+                    error_msg = f"State value for {register.entity_id} should be an integer 0 or 1"
+                    _log.error(error_msg)
+                    raise ValueError(error_msg)
+            else:
+                _log.info(f"Currently, fans only support state")
+
         # Changing thermostat values.
         elif "climate." in register.entity_id:
             if entity_point == "state":
@@ -199,7 +216,8 @@ class Interface(BasicRevert, BaseInterface):
                 raise ValueError(error_msg)
         else:
             error_msg = f"Unsupported entity_id: {register.entity_id}. " \
-                        f"Currently set_point is supported only for thermostats and lights"
+                        f"Supported entity prefixes: light., input_boolean., switch., fan., " \
+                        f"climate., cover."
             _log.error(error_msg)
             raise ValueError(error_msg)
         return register.value
@@ -249,23 +267,34 @@ class Interface(BasicRevert, BaseInterface):
                         else:
                             error_msg = f"State {state} from {entity_id} is not yet supported"
                             _log.error(error_msg)
-                            ValueError(error_msg)
+                            raise ValueError(error_msg)
                     # Assigning attributes
                     else:
                         attribute = entity_data.get("attributes", {}).get(f"{entity_point}", 0)
                         register.value = attribute
                         result[register.point_name] = attribute
-                # handling light states
-                elif "light." or "input_boolean." in entity_id: # Checks for lights or input bools since they have the same states.
+
+                # Handling binary on/off devices (lights, input_booleans, switches, fans).
+                # All of these map HA states "on"/"off" to integer 1/0 for the register value.
+                elif ("light." in entity_id
+                      or "input_boolean." in entity_id
+                      or "switch." in entity_id
+                      or "fan." in entity_id):
                     if entity_point == "state":
                         state = entity_data.get("state", None)
-                        # Converting light states to numbers.
                         if state == "on":
                             register.value = 1
                             result[register.point_name] = 1
                         elif state == "off":
                             register.value = 0
                             result[register.point_name] = 0
+                        else:
+                            _log.warning(
+                                f"Unexpected state '{state}' for {entity_id}; "
+                                f"expected 'on' or 'off'"
+                            )
+                            register.value = None
+                            result[register.point_name] = None
                     else:
                         attribute = entity_data.get("attributes", {}).get(f"{entity_point}", 0)
                         register.value = attribute
@@ -436,19 +465,41 @@ class Interface(BasicRevert, BaseInterface):
             "Authorization": f"Bearer {self.access_token}",
             "Content-Type": "application/json",
         }
+        payload = {"entity_id": entity_id}
+        _post_method(url, headers, payload, f"set {entity_id} to {state}")
 
-        payload = {
-            "entity_id": entity_id
+    def set_switch(self, entity_id, state):
+        """Turn a switch entity on or off via the HA switch service.
+
+        Args:
+            entity_id: Switch entity ID (e.g., ``switch.kitchen_outlet``).
+            state: ``"on"`` or ``"off"``.
+        """
+        service = 'turn_on' if state == 'on' else 'turn_off'
+        url = f"http://{self.ip_address}:{self.port}/api/services/switch/{service}"
+        headers = {
+            "Authorization": f"Bearer {self.access_token}",
+            "Content-Type": "application/json",
         }
+        payload = {"entity_id": entity_id}
+        _post_method(url, headers, payload, f"set {entity_id} to {state}")
 
-        response = requests.post(url, headers=headers, json=payload)
+    def set_fan(self, entity_id, state):
+        """Turn a fan entity on or off via the HA fan service.
 
-        # Optionally check for a successful response
-        if response.status_code == 200:
-            print(f"Successfully set {entity_id} to {state}")
-        else:
-            print(f"Failed to set {entity_id} to {state}: {response.text}")
-    
+        Args:
+            entity_id: Fan entity ID (e.g., ``fan.ceiling_fan``).
+            state: ``"on"`` or ``"off"``.
+        """
+        service = 'turn_on' if state == 'on' else 'turn_off'
+        url = f"http://{self.ip_address}:{self.port}/api/services/fan/{service}"
+        headers = {
+            "Authorization": f"Bearer {self.access_token}",
+            "Content-Type": "application/json",
+        }
+        payload = {"entity_id": entity_id}
+        _post_method(url, headers, payload, f"set {entity_id} to {state}")
+
     def set_cover_state(self, entity_id, value):
         """
         Control cover state (open/close/stop).

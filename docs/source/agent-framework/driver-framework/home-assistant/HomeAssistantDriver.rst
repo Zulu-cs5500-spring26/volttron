@@ -4,7 +4,35 @@ Home Assistant Driver
 =====================
 
 The Home Assistant driver enables VOLTTRON to read any data point from any Home Assistant controlled device.
-Currently control(write access) is supported only for lights(state and brightness) and thermostats(state and temperature).
+Write access (control) is supported for the following device types:
+
+.. list-table:: Supported writable device types
+   :header-rows: 1
+   :widths: 20 30 50
+
+   * - Entity prefix
+     - Writable points
+     - HA services used
+   * - ``light.``
+     - ``state`` (0/1), ``brightness`` (0-255)
+     - ``light.turn_on`` / ``light.turn_off``
+   * - ``climate.``
+     - ``state`` (0=off, 2=heat, 3=cool, 4=auto), ``temperature``
+     - ``climate.set_hvac_mode`` / ``climate.set_temperature``
+   * - ``input_boolean.``
+     - ``state`` (0/1)
+     - ``input_boolean.turn_on`` / ``input_boolean.turn_off``
+   * - ``cover.``
+     - ``state`` (``open`` / ``close`` / ``stop``), ``position`` (0-100)
+     - ``cover.open_cover`` / ``cover.close_cover`` / ``cover.stop_cover`` / ``cover.set_cover_position``
+   * - ``switch.``
+     - ``state`` (0/1)
+     - ``switch.turn_on`` / ``switch.turn_off``
+   * - ``fan.``
+     - ``state`` (0/1)
+     - ``fan.turn_on`` / ``fan.turn_off``
+
+Read access works for any entity Home Assistant exposes, regardless of type.
 
 The following diagram shows interaction between platform driver agent and home assistant driver.
 
@@ -61,10 +89,11 @@ Registry Configuration
 +++++++++++++++++++++++
 
 Registry file can contain one single device and its attributes or a logical group of devices and its
-attributes. Each entry should include the full entity id of the device, including but not limited to home assistant provided prefix
-such as "light.",  "climate." etc. The driver uses these prefixes to convert states into integers.
-Like mentioned before, the driver can only control lights and thermostats but can get data from all devices
-controlled by home assistant
+attributes. Each entry should include the full entity id of the device, including the home-assistant-provided prefix
+such as ``light.``, ``climate.``, ``cover.``, ``switch.``, ``fan.``, or ``input_boolean.``. The driver uses these prefixes
+to dispatch each register to the correct handler and to convert states into integers.
+Write access is limited to the device types listed in the "Supported writable device types" table above;
+read access works for any entity controlled by Home Assistant.
 
 Each entry in a registry file should also have a 'Entity Point' and a unique value for 'Volttron Point Name'. The 'Entity ID' maps to the device instance, the 'Entity Point' extracts the attribute or state, and 'Volttron Point Name' determines the name of that point as it appears in VOLTTRON.
 
@@ -176,11 +205,133 @@ Upon completion, initiate the platform driver. Utilize the listener agent to ver
     {'light_brightness': {'type': 'integer', 'tz': 'UTC', 'units': 'int'},
      'state': {'type': 'integer', 'tz': 'UTC', 'units': 'On / Off'}}]
 
-Running Tests
-+++++++++++++++++++++++
-To run tests on the VOLTTRON home assistant driver you need to create a helper in your home assistant instance. This can be done by going to **Settings > Devices & services > Helpers > Create Helper > Toggle**. Name this new toggle **volttrontest**. After that run the pytest from the root of your VOLTTRON file.
+Example Cover Registry
+**********************
+
+Covers support an ``open``/``close``/``stop`` state as well as a numeric ``position`` between 0 (fully closed) and
+100 (fully open).
+
+.. code-block:: json
+
+   [
+       {
+           "Entity ID": "cover.living_room_blinds",
+           "Entity Point": "state",
+           "Volttron Point Name": "blinds_state",
+           "Units": "Enumeration",
+           "Units Details": "open / close / stop",
+           "Writable": true,
+           "Starting Value": "close",
+           "Type": "string",
+           "Notes": "Living room blinds"
+       },
+       {
+           "Entity ID": "cover.living_room_blinds",
+           "Entity Point": "position",
+           "Volttron Point Name": "blinds_position",
+           "Units": "Percent",
+           "Units Details": "0=closed, 100=open",
+           "Writable": true,
+           "Starting Value": 0,
+           "Type": "int",
+           "Notes": "Position 0-100"
+       }
+   ]
+
+Example Switch Registry
+***********************
+
+Switches (smart plugs, outlets) support a simple 0/1 on-off state.
+
+.. code-block:: json
+
+   [
+       {
+           "Entity ID": "switch.kitchen_outlet",
+           "Entity Point": "state",
+           "Volttron Point Name": "kitchen_outlet_state",
+           "Units": "On / Off",
+           "Units Details": "0: off, 1: on",
+           "Writable": true,
+           "Starting Value": 0,
+           "Type": "int",
+           "Notes": "Kitchen counter smart plug"
+       }
+   ]
+
+Example Fan Registry
+********************
+
+Fans currently support a 0/1 on-off state. Speed control is not yet implemented.
+
+.. code-block:: json
+
+   [
+       {
+           "Entity ID": "fan.ceiling_fan",
+           "Entity Point": "state",
+           "Volttron Point Name": "ceiling_fan_state",
+           "Units": "On / Off",
+           "Units Details": "0: off, 1: on",
+           "Writable": true,
+           "Starting Value": 0,
+           "Type": "int",
+           "Notes": "Living room ceiling fan"
+       }
+   ]
+
+
+Transfer the registers files and the config files into the VOLTTRON config store using the commands below:
 
 .. code-block:: bash
-    pytest volttron/services/core/PlatformDriverAgent/tests/test_home_assistant.py
 
-If everything works, you will see 6 passed tests.
+   vctl config store platform.driver light.example.json HomeAssistant_Driver/light.example.json
+   vctl config store platform.driver devices/BUILDING/ROOM/light.example HomeAssistant_Driver/light.example.config
+
+Upon completion, initiate the platform driver. Utilize the listener agent to verify the driver output:
+
+.. code-block:: bash
+
+   2023-09-12 11:37:00,226 (listeneragent-3.3 211531) __main__ INFO: Peer: pubsub, Sender: platform.driver:, Bus: , Topic: devices/BUILDING/ROOM/light.example/all, Headers: {'Date': '2023-09-12T18:37:00.224648+00:00', 'TimeStamp': '2023-09-12T18:37:00.224648+00:00', 'SynchronizedTimeStamp': '2023-09-12T18:37:00.000000+00:00', 'min_compatible_version': '3.0', 'max_compatible_version': ''}, Message:
+   [{'light_brightness': 254, 'state': 'on'},
+    {'light_brightness': {'type': 'integer', 'tz': 'UTC', 'units': 'int'},
+     'state': {'type': 'integer', 'tz': 'UTC', 'units': 'On / Off'}}]
+
+Running Tests
++++++++++++++
+
+The driver ships two test suites:
+
+1. **Unit tests** (``test_home_assistant_unit.py``) — mock-based, do not require a running Home
+   Assistant instance or a full Volttron platform. Run them for fast feedback:
+
+   .. code-block:: bash
+
+      pytest services/core/PlatformDriverAgent/tests/test_home_assistant_unit.py
+
+2. **Integration tests** (``test_home_assistant.py``) — exercise the driver against a live Home
+   Assistant instance. To run them, first create a helper toggle in your Home Assistant instance
+   via **Settings > Devices & services > Helpers > Create Helper > Toggle**, name it
+   ``volttrontest``, then populate ``HOMEASSISTANT_TEST_IP``, ``ACCESS_TOKEN`` and ``PORT`` at the
+   top of ``test_home_assistant.py`` before running:
+
+   .. code-block:: bash
+
+      pytest services/core/PlatformDriverAgent/tests/test_home_assistant.py
+
+Setting up a local Home Assistant instance for manual testing
+*************************************************************
+
+The quickest way to run a local Home Assistant to test the driver against is with Docker:
+
+.. code-block:: bash
+
+   docker run -d --name homeassistant --privileged \
+       -v ~/ha-config:/config \
+       -p 8123:8123 \
+       ghcr.io/home-assistant/home-assistant:stable
+
+Complete the onboarding at ``http://localhost:8123``, then either install the built-in ``demo``
+platform (which provides working ``switch.``, ``fan.`` and ``cover.`` entities out of the box) or
+add your own entities via the UI. Generate a long-lived access token under your user profile and
+use it in the driver config file.
