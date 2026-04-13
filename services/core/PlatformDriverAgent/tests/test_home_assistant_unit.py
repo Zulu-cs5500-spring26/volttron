@@ -298,3 +298,71 @@ class TestHelperMethods:
         with pytest.raises(ValueError, match="between 0 and 100"):
             iface.set_cover_position("cover.x", 200)
         mock_post.assert_not_called()
+
+# ---------------------------------------------------------------------------
+# Edge-case tests: additional boundary conditions not covered above
+# ---------------------------------------------------------------------------
+
+
+@patch("platform_driver.interfaces.home_assistant.requests.post")
+class TestEdgeCases:
+    """Boundary and type-mismatch tests that complement the suites above."""
+
+    def _ok(self, mock_post):
+        mock_post.return_value = MagicMock(status_code=200, text="ok")
+
+    # ---- cover position boundaries ---------------------------------------
+
+    def test_cover_position_negative_raises(self, mock_post, iface):
+        """Position below 0 should be rejected."""
+        _bind_register(
+            iface, _make_register("cover.blinds", entity_point="position")
+        )
+        with pytest.raises(ValueError, match="between 0 and 100"):
+            iface._set_point("p", -10)
+        mock_post.assert_not_called()
+
+    def test_cover_position_zero_is_valid(self, mock_post, iface):
+        """Position 0 (fully closed) is a valid boundary value."""
+        self._ok(mock_post)
+        _bind_register(
+            iface, _make_register("cover.blinds", entity_point="position")
+        )
+        iface._set_point("p", 0)
+        payload = mock_post.call_args.kwargs["json"]
+        assert payload["position"] == 0
+
+    def test_cover_position_100_is_valid(self, mock_post, iface):
+        """Position 100 (fully open) is a valid boundary value."""
+        self._ok(mock_post)
+        _bind_register(
+            iface, _make_register("cover.blinds", entity_point="position")
+        )
+        iface._set_point("p", 100)
+        payload = mock_post.call_args.kwargs["json"]
+        assert payload["position"] == 100
+
+    # ---- type mismatch: string passed where int expected -----------------
+
+    def test_switch_string_value_raises(self, mock_post, iface):
+        """Passing string 'on' instead of int 1 should raise ValueError."""
+        _bind_register(iface, _make_register("switch.kitchen"))
+        with pytest.raises(ValueError, match="invalid literal for int"):
+            iface._set_point("p", "on")
+        mock_post.assert_not_called()
+
+    def test_fan_string_value_raises(self, mock_post, iface):
+        """Passing string 'off' instead of int 0 should raise ValueError."""
+        _bind_register(iface, _make_register("fan.ceiling"))
+        with pytest.raises(ValueError, match="invalid literal for int"):
+            iface._set_point("p", "off")
+        mock_post.assert_not_called()
+
+    # ---- cover stop command ----------------------------------------------
+
+    def test_cover_stop(self, mock_post, iface):
+        """Cover 'stop' is a valid state alongside 'open' and 'close'."""
+        self._ok(mock_post)
+        _bind_register(iface, _make_register("cover.blinds", reg_type=str))
+        iface._set_point("p", "stop")
+        assert "/api/services/cover/stop_cover" in mock_post.call_args.args[0]
