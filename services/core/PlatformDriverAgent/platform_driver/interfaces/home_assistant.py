@@ -154,7 +154,21 @@ class Interface(BasicRevert, BaseInterface):
                     raise ValueError(error_msg)
             else:
                 _log.info(f"Currently, input_booleans only support state")
-
+            
+        elif "switch." in register.entity_id:
+            if entity_point == "state":
+                if isinstance(register.value, int) and register.value in [0, 1]:
+                    if register.value == 1:
+                        self.set_switch(register.entity_id, "on")
+                    elif register.value == 0:
+                        self.set_switch(register.entity_id, "off")
+                else:
+                    error_msg = f"State value for {register.entity_id} should be 0 or 1"
+                    _log.error(error_msg)
+                    raise ValueError(error_msg)
+            else:
+                _log.info("Currently, switches only support state")
+            
         # Changing thermostat values.
         elif "climate." in register.entity_id:
             if entity_point == "state":
@@ -448,7 +462,21 @@ class Interface(BasicRevert, BaseInterface):
             print(f"Successfully set {entity_id} to {state}")
         else:
             print(f"Failed to set {entity_id} to {state}: {response.text}")
-    
+    def set_switch(self, entity_id, state):
+        service = 'turn_on' if state == 'on' else 'turn_off'
+
+        url = f"http://{self.ip_address}:{self.port}/api/services/switch/{service}"
+        headers = {
+            "Authorization": f"Bearer {self.access_token}",
+            "Content-Type": "application/json",
+        }
+
+        payload = {
+            "entity_id": entity_id
+        }
+
+        _post_method(url, headers, payload, f"set {entity_id} to {state}")
+
     def set_cover_state(self, entity_id, value):
         """
         Control cover state (open/close/stop).

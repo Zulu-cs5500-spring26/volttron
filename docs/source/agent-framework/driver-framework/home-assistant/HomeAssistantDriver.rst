@@ -184,3 +184,7 @@ To run tests on the VOLTTRON home assistant driver you need to create a helper i
     pytest volttron/services/core/PlatformDriverAgent/tests/test_home_assistant.py
 
 If everything works, you will see 6 passed tests.
+
+
+
+This page was updated by Brenda for Lab 6.
